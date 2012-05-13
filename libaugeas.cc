@@ -10,6 +10,8 @@
  */
 
 #include <string>
+#include <sstream>
+#include <vector>
 
 #define BUILDING_NODE_EXTENSION
 
@@ -80,6 +82,42 @@ inline uint32_t memberToUint32(Handle<Object> obj, const char *key)
     } else {
         return 0;
     }
+}
+
+/* 
+ * Helper function.
+ * Fills a string vector from object member *key
+ */
+inline void memberToVector(Handle<Object> obj, const char *key, std::vector<std::string> &vector)
+{
+    Local<Value> member = obj->Get(Local<String>(String::New(key)));
+
+    if (member->IsArray())
+    {
+        Local<Array> array = Local<Array>::Cast(member);
+
+        for (unsigned int i = 0; i < array->Length(); i++) {
+          Local<Value> element = array->Get(i);
+
+          if (element->IsString()) {
+              vector.push_back(std::string(*String::Utf8Value(element)));
+          }
+        }
+    }
+    else if (member->IsString()) {
+        vector.push_back(std::string(*String::Utf8Value(member)));
+    }
+}
+
+/*
+ * Helper function.
+ * Convert an int into a string
+ */
+inline std::string intToString(int i)
+{
+    std::stringstream ss;
+    ss << i;
+    return ss.str();
 }
 
 class LibAugeas : public node::ObjectWrap {
@@ -817,8 +855,8 @@ struct CreateAugeasUV {
     std::string root;
     std::string loadpath;
     std::string lens;
-    std::string incl;
-    std::string excl;
+    std::vector<std::string> incl;
+    std::vector<std::string> excl;
     unsigned int flags;
     augeas *aug;
 };
@@ -871,18 +909,22 @@ void createAugeasWork(uv_work_t *req)
         if (!her->incl.empty()) {
             // specifying which files to load :
             // /augeas/load/<random-name>/incl = glob
-            std::string inclPath = basePath + "/incl";
-            rc = aug_set(her->aug, inclPath.c_str(), her->incl.c_str());
-            if (AUG_NOERROR != rc)
-                return;
+            for (size_t i = 0; i < her->incl.size(); i++) {
+                std::string inclPath = basePath + "/incl[" + intToString(i+1) + "]";
+                rc = aug_set(her->aug, inclPath.c_str(), her->incl[i].c_str());
+                if (AUG_NOERROR != rc)
+                    return;
+            }
         }
         if (!her->excl.empty()) {
             // specifying which files NOT to load
             // /augeas/load/<random-name>/excl = glob (e. g. "*.dpkg-new")
-            std::string exclPath = basePath + "/excl";
-            rc = aug_set(her->aug, exclPath.c_str(), her->excl.c_str());
-            if (AUG_NOERROR != rc)
-                return;
+            for (size_t i = 0; i < her->excl.size(); i++) {
+                std::string exclPath = basePath + "/excl[" + intToString(i+1) + "]";
+                rc = aug_set(her->aug, exclPath.c_str(), her->excl[i].c_str());
+                if (AUG_NOERROR != rc)
+                    return;
+            }
         }
 
         rc = aug_load(her->aug);
@@ -950,8 +992,8 @@ Handle<Value> createAugeas(const Arguments& args)
             her->loadpath = memberToString(obj, "loadpath");
             her->flags = memberToUint32(obj, "flags");
             her->lens = memberToString(obj, "lens");
-            her->incl = memberToString(obj, "incl");
-            her->excl = memberToString(obj, "excl");
+            memberToVector(obj, "incl", her->incl);
+            memberToVector(obj, "excl", her->excl);
         }
 
         uv_queue_work(uv_default_loop(), &her->request,
