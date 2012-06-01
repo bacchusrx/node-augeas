@@ -12,6 +12,7 @@
 #include <string>
 #include <sstream>
 #include <vector>
+#include <cstring>
 
 #define BUILDING_NODE_EXTENSION
 
@@ -47,8 +48,8 @@ inline void throw_aug_error_msg(augeas *aug)
         ThrowException(Exception::Error(String::New(aug_error_msg(aug).c_str())));
     } else {
         ThrowException(Exception::Error(
-            String::New(
-                "An error has occured from Augeas API call, but no description available")));
+                           String::New(
+                               "An error has occured from Augeas API call, but no description available")));
     }
 }
 
@@ -97,11 +98,11 @@ inline void memberToVector(Handle<Object> obj, const char *key, std::vector<std:
         Local<Array> array = Local<Array>::Cast(member);
 
         for (unsigned int i = 0; i < array->Length(); i++) {
-          Local<Value> element = array->Get(i);
+            Local<Value> element = array->Get(i);
 
-          if (element->IsString()) {
-              vector.push_back(std::string(*String::Utf8Value(element)));
-          }
+            if (element->IsString()) {
+                vector.push_back(std::string(*String::Utf8Value(element)));
+            }
         }
     }
     else if (member->IsString()) {
@@ -120,11 +121,30 @@ inline std::string intToString(int i)
     return ss.str();
 }
 
+/*
+ * Helper function.
+ * Joins JS array by new line.
+ */
+inline std::string join(Local<Array> a)
+{
+    std::string res;
+    uint32_t len = a->Length();
+    if (len > 0) {
+        for (uint32_t i = 0; i < len - 1; ++i) {
+            String::Utf8Value v(a->Get(i));
+            res.append(*v);
+            res.append("\n");
+        }
+        String::Utf8Value v(a->Get(len-1));
+        res.append(*v);
+    }
+    return res;
+}
+
 class LibAugeas : public node::ObjectWrap {
 public:
     static void Init(Handle<Object> target);
     static Local<Object> New(augeas *aug);
-    static Handle<Value> NewInstance(const Arguments& args);
 
 protected:
     augeas * m_aug;
@@ -133,8 +153,6 @@ protected:
 
     static Persistent<FunctionTemplate> augeasTemplate;
     static Persistent<Function> constructor;
-
-    static Handle<Value> New(const Arguments& args);
 
     static Handle<Value> defvar     (const Arguments& args);
     static Handle<Value> defnode    (const Arguments& args);
@@ -147,10 +165,14 @@ protected:
     static Handle<Value> nmatch     (const Arguments& args);
     static Handle<Value> match      (const Arguments& args);
     static Handle<Value> load       (const Arguments& args);
+    static Handle<Value> srun       (const Arguments& args);
     static Handle<Value> insertAfter  (const Arguments& args);
     static Handle<Value> insertBefore (const Arguments& args);
     static Handle<Value> error      (const Arguments& args);
     static Handle<Value> errorMsg   (const Arguments& args);
+    static Handle<Value> errorLens  (const Arguments& args);
+    static Handle<Value> errorIncl  (const Arguments& args);
+    static Handle<Value> print      (const Arguments& args);
 };
 
 Persistent<FunctionTemplate> LibAugeas::augeasTemplate;
@@ -185,7 +207,7 @@ void LibAugeas::Init(Handle<Object> target)
     NODE_DEFINE_CONSTANT(target, AUG_ECMDRUN);
     NODE_DEFINE_CONSTANT(target, AUG_EBADARG);
 
-    augeasTemplate = Persistent<FunctionTemplate>::New(FunctionTemplate::New(New));
+    augeasTemplate = Persistent<FunctionTemplate>::New(FunctionTemplate::New());
     augeasTemplate->SetClassName(String::NewSymbol("Augeas"));
     augeasTemplate->InstanceTemplate()->SetInternalFieldCount(1);
 
@@ -202,15 +224,16 @@ void LibAugeas::Init(Handle<Object> target)
     _NEW_METHOD(nmatch);
     _NEW_METHOD(match);
     _NEW_METHOD(load);
+    _NEW_METHOD(srun);
     _NEW_METHOD(insertAfter);
     _NEW_METHOD(insertBefore);
     _NEW_METHOD(error);
     _NEW_METHOD(errorMsg);
-
+    _NEW_METHOD(errorLens);
+    _NEW_METHOD(errorIncl);
+    _NEW_METHOD(print);
 
     constructor = Persistent<Function>::New(augeasTemplate->GetFunction());
-
-    target->Set(String::NewSymbol("Augeas"), constructor);
 }
 
 /*
@@ -227,84 +250,6 @@ Local<Object> LibAugeas::New(augeas *aug)
     return O;
 }
 
-
-/*
- * Creates an JS object from this C++ code,
- * passing arguments received from JS code to
- * the constructor LibAugeas::New(const Arguments& args)
- */
-Handle<Value> LibAugeas::NewInstance(const Arguments& args)
-{
-    HandleScope scope;
-    Handle<Value> *argv = NULL;
-
-    int argc = args.Length();
-    if (argc > 0) {
-        argv = new Handle<Value>[argc];
-        assert(argv != NULL);
-        for (int i = 0; i < argc; ++i) {
-            argv[i] = args[i];
-        }
-    }
-
-    Local<Object> instance = constructor->NewInstance(argc, argv);
-
-    if (NULL != argv)
-        delete [] argv;
-
-    return scope.Close(instance);
-}
-
-/*
- * This function is used as a constructor from JS side via
- * var aug = new lib.Augeas(...);
- */
-Handle<Value> LibAugeas::New(const Arguments& args)
-{
-    HandleScope scope;
-
-    LibAugeas *obj = new LibAugeas();
-
-    std::string root;
-    std::string loadpath;
-    unsigned int flags = 0;
-
-    // Allow passing options in object:
-    if (args[0]->IsObject()) {
-        Local<Object> obj = args[0]->ToObject();
-        root     = memberToString(obj, "root");
-        loadpath = memberToString(obj, "loadpath");
-        flags    = memberToUint32(obj, "flags");
-    } else {
-        // C-like way:
-        if (args[0]->IsString()) {
-            String::Utf8Value p_str(args[0]);
-            root = *p_str;
-        }
-        if (args[1]->IsString()) {
-            String::Utf8Value l_str(args[1]);
-            loadpath = *l_str;
-        }
-        if (args[2]->IsNumber()) {
-            flags = args[2]->Uint32Value();
-        }
-    }
-    
-    obj->m_aug = aug_init(root.c_str(), loadpath.c_str(), flags | AUG_NO_ERR_CLOSE);
-
-    if (NULL == obj->m_aug) { // should not happen
-        ThrowException(Exception::Error(String::New("aug_init() badly failed")));
-        return scope.Close(Undefined());
-    } else if (AUG_NOERROR != aug_error(obj->m_aug)) {
-        throw_aug_error_msg(obj->m_aug);
-        aug_close(obj->m_aug);
-        return scope.Close(Undefined());
-    }
-
-    obj->Wrap(args.This());
-
-    return args.This();
-}
 
 /*
  * Wrapper of aug_defvar() - define a variable
@@ -351,7 +296,7 @@ Handle<Value> LibAugeas::defvar(const Arguments& args)
  *
  * On error, throws an exception and returns undefined;
  * on success, returns the number of nodes in the nodeset (>= 0)
- * 
+ *
  * Arguments:
  * name - required
  * expr - required
@@ -359,7 +304,7 @@ Handle<Value> LibAugeas::defvar(const Arguments& args)
  * callback - optional
  *
  * The last argument could be a function. It will be called (synchronously)
- * with one argument set to True if a node was created, and False if it already existed. 
+ * with one argument set to True if a node was created, and False if it already existed.
  */
 Handle<Value> LibAugeas::defnode(const Arguments& args)
 {
@@ -416,7 +361,7 @@ Handle<Value> LibAugeas::get(const Arguments& args)
     HandleScope scope;
 
     if (args.Length() != 1) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly one argument")));
         return scope.Close(Undefined());
     }
 
@@ -431,8 +376,7 @@ Handle<Value> LibAugeas::get(const Arguments& args)
      * 0 if there is none, and a negative value
      * if there is more than one node matching PATH,
      * or if PATH is not a legal path expression.
-     */
-    /*
+     *
      * The string *value must not be freed by the caller,
      * and is valid as long as its node remains unchanged.
      */
@@ -464,7 +408,7 @@ Handle<Value> LibAugeas::set(const Arguments& args)
     HandleScope scope;
 
     if (args.Length() != 2) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly two arguments")));
         return scope.Close(Undefined());
     }
 
@@ -495,7 +439,7 @@ Handle<Value> LibAugeas::setm(const Arguments& args)
     HandleScope scope;
 
     if (args.Length() != 3) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly three arguments")));
         return scope.Close(Undefined());
     }
 
@@ -529,7 +473,7 @@ Handle<Value> LibAugeas::rm(const Arguments& args)
     HandleScope scope;
 
     if (args.Length() != 1) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly one argument")));
         return scope.Close(Undefined());
     }
 
@@ -556,7 +500,7 @@ Handle<Value> LibAugeas::mv(const Arguments& args)
     HandleScope scope;
 
     if (args.Length() != 2) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly two arguments")));
         return scope.Close(Undefined());
     }
 
@@ -586,7 +530,7 @@ Handle<Value> LibAugeas::insertAfter(const Arguments& args)
     HandleScope scope;
 
     if (args.Length() != 2) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly two arguments")));
         return scope.Close(Undefined());
     }
 
@@ -612,7 +556,7 @@ Handle<Value> LibAugeas::insertBefore(const Arguments& args)
     HandleScope scope;
 
     if (args.Length() != 2) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly two arguments")));
         return scope.Close(Undefined());
     }
 
@@ -667,7 +611,67 @@ Handle<Value> LibAugeas::errorMsg(const Arguments& args)
     return scope.Close(String::New(aug_error_msg(obj->m_aug).c_str()));
 }
 
+/*
+ * Returns the lens load error message
+ */
+Handle<Value> LibAugeas::errorLens(const Arguments& args)
+{
+    HandleScope scope;
+    const char *val;
 
+    if (args.Length() != 1) {
+        ThrowException(Exception::TypeError(String::New("Function expects lens argument")));
+        return scope.Close(Undefined());
+    }
+    String::Utf8Value lens(args[0]);
+
+    LibAugeas *obj = ObjectWrap::Unwrap<LibAugeas>(args.This());
+
+    std::string errPath = "/augeas/load/" + std::string(*lens) + "/error";
+    if (aug_get(obj->m_aug, errPath.c_str(), &val))
+        return scope.Close(String::New(val));
+
+    return scope.Close(Undefined());
+}
+
+/*
+ * Returns the incl parsed error message
+ */
+Handle<Value> LibAugeas::errorIncl(const Arguments& args)
+{
+    HandleScope scope;
+    int mres;
+    const char *val;
+    char **matches;
+
+    if (args.Length() != 1) {
+        ThrowException(Exception::TypeError(String::New("Function expects incl argument")));
+        return scope.Close(Undefined());
+    }
+    String::Utf8Value incl(args[0]);
+
+    LibAugeas *obj = ObjectWrap::Unwrap<LibAugeas>(args.This());
+
+    std::string errPath = "/augeas/files" + std::string(*incl) + "/error";
+    mres = aug_match(obj->m_aug, errPath.c_str(), &matches);
+    if (mres) {
+        Local<Object> res = Object::New();
+
+        if (aug_get(obj->m_aug, std::string(errPath + "/line").c_str(), &val)) {
+            res->Set(Local<String>::New(String::New("line")),
+                     Local<String>::New(String::New(val)));
+        }
+        if (aug_get(obj->m_aug,
+                    std::string(errPath + "/message").c_str(), &val)) {
+            res->Set(Local<String>::New(String::New("message")),
+                     Local<String>::New(String::New(val)));
+        }
+        free(matches);
+        return scope.Close(res);
+    }
+
+    return scope.Close(Undefined());
+}
 
 struct SaveUV {
     uv_work_t request;
@@ -758,7 +762,7 @@ Handle<Value> LibAugeas::nmatch(const Arguments& args)
     HandleScope scope;
 
     if (args.Length() != 1) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly one argument")));
         return scope.Close(Undefined());
     }
 
@@ -785,7 +789,7 @@ Handle<Value> LibAugeas::match(const Arguments& args)
     HandleScope scope;
 
     if (args.Length() != 1) {
-        ThrowException(Exception::TypeError(String::New("Wrong number of arguments")));
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly one argument")));
         return scope.Close(Undefined());
     }
 
@@ -813,6 +817,58 @@ Handle<Value> LibAugeas::match(const Arguments& args)
 }
 
 /*
+ * Wrapper of aug_print().
+ * Returns an object of key/value matching given path expression
+ */
+Handle<Value> LibAugeas::print(const Arguments& args)
+{
+    HandleScope scope;
+
+    if (args.Length() != 1) {
+        ThrowException(Exception::TypeError(String::New("Function expects incl argument")));
+        return scope.Close(Undefined());
+    }
+
+    LibAugeas *obj = ObjectWrap::Unwrap<LibAugeas>(args.This());
+    String::Utf8Value incl(args[0]);
+    Local<Object> res = Object::New();
+
+    std::string matchPath = "/files" + std::string(*incl) + "/*";
+    FILE *out = tmpfile();
+    if (aug_print(obj->m_aug, out, matchPath.c_str()) == 0) {
+        char line[256];
+        rewind(out);
+        while(fgets(line, 256, out) != NULL) {
+            // remove end of line
+            line[strlen(line) - 1] = '\0';
+            std::string s = line;;
+            // skip comments
+            if (s.find("#comment") != std::string::npos)
+                continue;
+            s = s.substr(matchPath.length() - 1);
+            // split by '=' sign
+            size_t eqpos = s.find(" = ");
+            if (eqpos == std::string::npos)
+                continue;
+            // extract key and value
+            std::string key = s.substr(0, eqpos);
+            std::string value = s.substr(eqpos + 3);
+            // remove '"' sign from around value
+            value.erase(value.begin());
+            value.erase(value.end() - 1);
+            res->Set(Local<String>::New(String::New(key.c_str())),
+                     Local<String>::New(String::New(value.c_str())));
+        }
+
+        fclose(out);
+        return scope.Close(res);
+    }
+
+    fclose(out);
+    return scope.Close(Undefined());
+}
+
+/*
  * Wrapper of aug_load() - load /files
  */
 Handle<Value> LibAugeas::load(const Arguments& args)
@@ -826,7 +882,8 @@ Handle<Value> LibAugeas::load(const Arguments& args)
 
     LibAugeas *obj = ObjectWrap::Unwrap<LibAugeas>(args.This());
 
-    /* aug_load() returns -1 on error, 0 on success. Success includes the case
+    /*
+     * aug_load() returns -1 on error, 0 on success. Success includes the case
      * where some files could not be loaded. Details of such files can be found
      * as '/augeas//error'.
      */
@@ -836,6 +893,50 @@ Handle<Value> LibAugeas::load(const Arguments& args)
     }
 
     return scope.Close(Undefined());
+}
+
+/*
+ * Wrapper of aug_srun() - run augeas commands (like augtool does)
+ * Returns the number of executed commands.
+ * Throws expression on error or if the 'quit' command encountered.
+ * Arguments:
+ * string or array of strings
+ */
+Handle<Value> LibAugeas::srun(const Arguments& args)
+{
+    HandleScope scope;
+
+    if (args.Length() != 1) {
+        ThrowException(Exception::TypeError(String::New("Function accepts exactly one argument")));
+        return scope.Close(Undefined());
+    }
+
+    LibAugeas *obj = ObjectWrap::Unwrap<LibAugeas>(args.This());
+
+    std::string text;
+
+    if (args[0]->IsArray()) {
+        text = join(Local<Array>::Cast(args[0]));
+    } else {
+        String::Utf8Value t_str(args[0]);
+        text = *t_str;
+    }
+
+    /*
+     * Returns the number of executed commands on success,
+     * -1 on failure, and -2 if a 'quit' command was encountered.
+     * TODO: use output (the second argument to aug_srun() != NULL)
+     */
+    int rc = aug_srun(obj->m_aug, NULL, text.c_str());
+    if (rc >= 0) {
+        return scope.Close(Number::New(rc));
+    } else if (-1 == rc) {
+        throw_aug_error_msg(obj->m_aug);
+    } else if (-2 == rc) {
+        ThrowException(Exception::Error(String::New("'quit' command was encountered")));
+    } else {
+        ThrowException(Exception::Error(String::New("Unexpected return code from aug_srun()")));
+    }
 }
 
 
@@ -857,6 +958,7 @@ struct CreateAugeasUV {
     std::string lens;
     std::vector<std::string> incl;
     std::vector<std::string> excl;
+    std::string srun;
     unsigned int flags;
     augeas *aug;
 };
@@ -872,24 +974,27 @@ void createAugeasWork(uv_work_t *req)
 
     CreateAugeasUV *her = static_cast<CreateAugeasUV*>(req->data);
 
-    unsigned int flags;
-
-    // Always set AUG_NO_ERR_CLOSE:
-    flags = AUG_NO_ERR_CLOSE | her->flags;
-
     // do not load all lenses if a specific lens is given,
     // ignore any setting in flags.
     // XXX: AUG_NO_MODL_AUTOLOAD implies AUG_NO_LOAD
     if (!her->lens.empty()) {
-        flags |= AUG_NO_MODL_AUTOLOAD;
-    } else {
-        flags &= ~AUG_NO_MODL_AUTOLOAD;
+        her->flags |= AUG_NO_MODL_AUTOLOAD;
     }
 
-    her->aug = aug_init(her->root.c_str(), her->loadpath.c_str(), flags);
+    her->aug = aug_init(her->root.c_str(), her->loadpath.c_str(), her->flags);
     rc = aug_error(her->aug);
     if (AUG_NOERROR != rc)
         return;
+
+    /*
+     * Consider lens/incl/excl interface obsolete.
+     * With srun: respect all flags (AUG_NO_MODL_AUTOLOAD, AUG_NO_LOAD),
+     * execute srun commands and return.
+     */
+    if (!her->srun.empty()) {
+        rc = aug_srun(her->aug, NULL, her->srun.c_str());
+        return;
+    }
 
     if (!her->lens.empty()) {
         // specifying which lens to load
@@ -951,20 +1056,48 @@ void createAugeasAfter(uv_work_t* req)
 }
 
 /*
- * Creates augeas object from JS side either in sync or async way
+ * Creates an Augeas object from JS side either in sync or async way
  * depending on the last argument:
  *
- * lib.createAugeas([...], function(aug) {...}) - async
+ * augeas.createAugeas([...], function(aug) {...}) - async
  *
  * or:
  *
- * var aug = lib.createAugeas([...]) - sync
+ * var aug = augeas.createAugeas([...]) - sync
  *
- * The latter is equivalent to var aug = new lib.Augeas([...]);
  */
 Handle<Value> createAugeas(const Arguments& args)
 {
     HandleScope scope;
+
+    // options for aug_init(root, loadpath, flags):
+    std::string root;
+    std::string loadpath;
+    unsigned int flags;
+
+    // Allow passing options as an JS object:
+    if (args[0]->IsObject()) {
+        Local<Object> obj = args[0]->ToObject();
+        root     = memberToString(obj, "root");
+        loadpath = memberToString(obj, "loadpath");
+        flags    = memberToUint32(obj, "flags");
+    } else {
+        // C-like way:
+        if (args[0]->IsString()) {
+            String::Utf8Value p_str(args[0]);
+            root = *p_str;
+        }
+        if (args[1]->IsString()) {
+            String::Utf8Value l_str(args[1]);
+            loadpath = *l_str;
+        }
+        if (args[2]->IsNumber()) {
+            flags = args[2]->Uint32Value();
+        }
+    }
+
+    // always set to be able to get error messages, if aug_init() failed:
+    flags |= AUG_NO_ERR_CLOSE;
 
     /*
      * If the last argument is a function, create augeas
@@ -978,22 +1111,23 @@ Handle<Value> createAugeas(const Arguments& args)
         her->callback = Persistent<Function>::New(
                             Local<Function>::Cast(args[args.Length()-1]));
 
-        /* TODO:
-         * Use more then one object.
-         * From JS point it might look like this:
-         * createAugeas({root:..., loadpath:..., lens:...}, {lens:...}, {lens:...}, ..., callback);
-         * In the first object there might be root, loadpath or flags members, and lenses
-         * might be omitted. In other objects only lens, incl and excl members should be allowed.
-         * ** flags are filterred in createAugeasWork() **
-         */
+        her->root = root;
+        her->loadpath = loadpath;
+        her->flags = flags;
+
+        // Extra options for async mode:
         if (args[0]->IsObject()) {
             Local<Object> obj = args[0]->ToObject();
-            her->root = memberToString(obj, "root");
-            her->loadpath = memberToString(obj, "loadpath");
-            her->flags = memberToUint32(obj, "flags");
             her->lens = memberToString(obj, "lens");
             memberToVector(obj, "incl", her->incl);
             memberToVector(obj, "excl", her->excl);
+
+            Local<Value> srun = obj->Get(Local<String>(String::New("srun")));
+            if (srun->IsArray()) {
+                her->srun = join(Local<Array>::Cast(srun));
+            } else {
+                her->srun = memberToString(obj, "srun");
+            }
         }
 
         uv_queue_work(uv_default_loop(), &her->request,
@@ -1001,7 +1135,20 @@ Handle<Value> createAugeas(const Arguments& args)
 
         return scope.Close(Undefined());
     } else { // sync
-        return scope.Close(LibAugeas::NewInstance(args));
+
+        augeas *aug = aug_init(root.c_str(), loadpath.c_str(), flags);
+
+        if (NULL == aug) { // should not happen due to AUG_NO_ERR_CLOSE
+            ThrowException(Exception::Error(
+                               String::New("aug_init() badly failed: it should not return NULL, but it did.")));
+            return scope.Close(Undefined());
+        } else if (AUG_NOERROR != aug_error(aug)) {
+            throw_aug_error_msg(aug);
+            aug_close(aug);
+            return scope.Close(Undefined());
+        }
+
+        return scope.Close(LibAugeas::New(aug));
     }
 }
 
